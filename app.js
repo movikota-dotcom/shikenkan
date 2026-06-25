@@ -25,6 +25,8 @@
     moved: false,
     lastX: 0,
     lastY: 0,
+    pointerX: 0,
+    pointerY: 0,
     suppressClick: false,
     row: 0,
   };
@@ -714,6 +716,9 @@
     const points = getMeshPoints();
     const rowCenters = new Map();
     for (const tube of points) {
+      if (!tube.length) {
+        continue;
+      }
       const row = tube[0].row;
       if (!rowCenters.has(row)) {
         rowCenters.set(row, []);
@@ -734,6 +739,50 @@
     return nearestRow;
   }
 
+  function clampMeshRowOffset(row) {
+    const margin = 12;
+    const rowPoints = getMeshPoints()
+      .filter((tube) => tube[0] && tube[0].row === row)
+      .flat();
+    if (!rowPoints.length || !state.meshRowOffsets[row]) {
+      return;
+    }
+    const xs = rowPoints.map((point) => point.x);
+    const ys = rowPoints.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const canvasWidth = els.imageCanvas.width;
+    const canvasHeight = els.imageCanvas.height;
+    const rowWidth = maxX - minX;
+    const rowHeight = maxY - minY;
+
+    if (rowWidth <= canvasWidth - margin * 2) {
+      if (minX < margin) {
+        state.meshRowOffsets[row].x += margin - minX;
+      } else if (maxX > canvasWidth - margin) {
+        state.meshRowOffsets[row].x -= maxX - (canvasWidth - margin);
+      }
+    } else if (minX > margin) {
+      state.meshRowOffsets[row].x -= minX - margin;
+    } else if (maxX < canvasWidth - margin) {
+      state.meshRowOffsets[row].x += canvasWidth - margin - maxX;
+    }
+
+    if (rowHeight <= canvasHeight - margin * 2) {
+      if (minY < margin) {
+        state.meshRowOffsets[row].y += margin - minY;
+      } else if (maxY > canvasHeight - margin) {
+        state.meshRowOffsets[row].y -= maxY - (canvasHeight - margin);
+      }
+    } else if (minY > margin) {
+      state.meshRowOffsets[row].y -= minY - margin;
+    } else if (maxY < canvasHeight - margin) {
+      state.meshRowOffsets[row].y += canvasHeight - margin - maxY;
+    }
+  }
+
   function drawImageAndMesh() {
     ctx.clearRect(0, 0, els.imageCanvas.width, els.imageCanvas.height);
     if (sourceImage) {
@@ -741,20 +790,89 @@
     }
     const points = getMeshPoints();
     ctx.save();
-    ctx.strokeStyle = "rgba(13, 118, 110, 0.74)";
-    ctx.fillStyle = "rgba(178, 58, 72, 0.9)";
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
     for (const tube of points) {
+      if (!tube.length) {
+        continue;
+      }
       const xs = tube.map((point) => point.x);
       const ys = tube.map((point) => point.y);
-      ctx.strokeStyle = tube[0].row % 2 === 0 ? "rgba(13, 118, 110, 0.78)" : "rgba(25, 96, 180, 0.78)";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.72)";
+      ctx.shadowBlur = 5;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.strokeRect(Math.min(...xs) - 14, Math.min(...ys) - 14, 28, Math.max(...ys) - Math.min(...ys) + 28);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.lineWidth = 1;
       ctx.strokeRect(Math.min(...xs) - 14, Math.min(...ys) - 14, 28, Math.max(...ys) - Math.min(...ys) + 28);
       for (const point of tube) {
         ctx.beginPath();
-        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.54)";
+        ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+        ctx.arc(point.x, point.y, 4.2, 0, Math.PI * 2);
         ctx.fill();
       }
+      ctx.lineWidth = 2;
     }
+    ctx.restore();
+    if (dragState.active) {
+      drawMeshMagnifier({ x: dragState.pointerX, y: dragState.pointerY });
+    }
+  }
+
+  function drawMeshMagnifier(point) {
+    const radius = 56;
+    const zoom = 2.35;
+    let lensX = point.x + 66;
+    let lensY = point.y - 72;
+    if (lensX + radius > els.imageCanvas.width) {
+      lensX = point.x - 66;
+    }
+    if (lensY - radius < 0) {
+      lensY = point.y + 72;
+    }
+    lensX = Math.max(radius + 4, Math.min(els.imageCanvas.width - radius - 4, lensX));
+    lensY = Math.max(radius + 4, Math.min(els.imageCanvas.height - radius - 4, lensY));
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(lensX, lensY, radius, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(lensX - radius, lensY - radius, radius * 2, radius * 2);
+    ctx.translate(lensX - point.x * zoom, lensY - point.y * zoom);
+    ctx.scale(zoom, zoom);
+    if (sourceImage) {
+      ctx.drawImage(sourceImage, 0, 0, els.imageCanvas.width, els.imageCanvas.height);
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(lensX, lensY, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 5;
+    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.48)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(lensX - 12, lensY);
+    ctx.lineTo(lensX + 12, lensY);
+    ctx.moveTo(lensX, lensY - 12);
+    ctx.lineTo(lensX, lensY + 12);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.58)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -950,28 +1068,38 @@
       if (!sourceImage) {
         return;
       }
+      event.preventDefault();
       const point = getCanvasPoint(event);
       dragState.active = true;
       dragState.moved = false;
       dragState.lastX = point.x;
       dragState.lastY = point.y;
+      dragState.pointerX = point.x;
+      dragState.pointerY = point.y;
       dragState.row = getNearestMeshRow(point);
       els.imageCanvas.setPointerCapture(event.pointerId);
+      drawImageAndMesh();
     });
     els.imageCanvas.addEventListener("pointermove", (event) => {
       if (!dragState.active) {
         return;
       }
+      event.preventDefault();
       const point = getCanvasPoint(event);
       const dx = point.x - dragState.lastX;
       const dy = point.y - dragState.lastY;
+      dragState.pointerX = point.x;
+      dragState.pointerY = point.y;
       if (Math.abs(dx) + Math.abs(dy) > 0.5) {
         dragState.moved = true;
         ensureMeshRowOffsets(getMeshGroups().length);
         state.meshRowOffsets[dragState.row].x += dx;
         state.meshRowOffsets[dragState.row].y += dy;
+        clampMeshRowOffset(dragState.row);
         dragState.lastX = point.x;
         dragState.lastY = point.y;
+        drawImageAndMesh();
+      } else {
         drawImageAndMesh();
       }
     });
@@ -979,17 +1107,21 @@
       if (!dragState.active) {
         return;
       }
+      event.preventDefault();
       dragState.active = false;
       dragState.suppressClick = dragState.moved;
       if (dragState.moved) {
+        clampMeshRowOffset(dragState.row);
         saveInputState();
       }
       if (els.imageCanvas.hasPointerCapture(event.pointerId)) {
         els.imageCanvas.releasePointerCapture(event.pointerId);
       }
+      drawImageAndMesh();
     });
     els.imageCanvas.addEventListener("pointercancel", () => {
       dragState.active = false;
+      drawImageAndMesh();
     });
     els.readMeshButton.addEventListener("click", readMesh);
   }
