@@ -50,6 +50,18 @@ button.primary {
   min-width: 88px;
 }
 
+button.danger-action {
+  background: #8f1728;
+  border-color: #8f1728;
+  color: #fff;
+  min-width: 88px;
+}
+
+button.danger-action:hover {
+  background: #741020;
+  border-color: #741020;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
