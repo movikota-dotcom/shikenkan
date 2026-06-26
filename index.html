@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>メデューサ攻略</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>メデューサ攻略</h1>
+          </div>
+          <div class="actions">
+            <button id="clearButton" type="button">クリア</button>
+          </div>
+        </header>
+
+        <section class="panels">
+          <div class="panel image-panel">
+            <div class="panel-title">
+              <h2>画像読取</h2>
+              <div class="image-source-actions">
+                <label class="file-button">
+                  画像選択
+                  <input id="imageInput" type="file" accept="image/*">
+                </label>
+                <button id="pasteImageButton" type="button">画像ペースト</button>
+              </div>
+            </div>
+
+            <div class="control-group mesh-settings">
+              <div class="group-title">メッシュ設定</div>
+              <div class="stage-controls" id="meshStageControls"></div>
+              <div class="stage-actions">
+                <button id="addMeshStageButton" type="button">段を追加</button>
+                <button id="removeMeshStageButton" type="button">段を削除</button>
+              </div>
+            </div>
+
+            <div class="control-group mesh-actions">
+              <div class="group-title">読取</div>
+              <button id="readMeshButton" type="button" class="danger-action">メッシュから読み込む</button>
+              <div class="picked-color-chip" id="pickedColorChip"></div>
+            </div>
+
+            <div class="canvas-wrap">
+              <canvas id="imageCanvas" width="720" height="420"></canvas>
+              <p id="imageHint">画像を選ぶか貼り付けるとメッシュが表示されます。</p>
+            </div>
+          </div>
+
+          <div class="panel editor-panel">
+            <div class="panel-title">
+              <h2>入力</h2>
+              <div class="small-actions">
+                <button id="addTubeButton" type="button">瓶+</button>
+                <button id="removeTubeButton" type="button">瓶-</button>
+              </div>
+            </div>
+
+            <div class="controls-grid">
+              <label>
+                既存の空瓶
+                <select id="emptyTubeCount">
+                  <option value="0">0個</option>
+                  <option value="1">1個</option>
+                  <option value="2" selected>2個</option>
+                  <option value="3">3個</option>
+                  <option value="4">4個</option>
+                  <option value="5">5個</option>
+                  <option value="6">6個</option>
+                </select>
+              </label>
+              <label>
+                追加小瓶の数
+                <select id="miniTubeLimit">
+                  <option value="0">0個</option>
+                  <option value="1">1個</option>
+                  <option value="2">2個</option>
+                  <option value="3">3個</option>
+                  <option value="4" selected>4個</option>
+                  <option value="5">5個</option>
+                  <option value="6">6個</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="input-hint-row">
+              <p class="input-hint">スポイトの色を反映させたい箇所をタップ</p>
+              <div class="picked-color-chip" id="inputPickedColorChip"></div>
+            </div>
+            <div class="board" id="tubeBoard"></div>
+            <div class="solve-row">
+              <button id="solveButton" type="button" class="danger-action">解く</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <aside class="result-panel">
+        <div class="panel-title">
+          <h2>解答</h2>
+          <span id="solverStatus" class="status">未実行</span>
+        </div>
+        <div class="summary" id="solutionSummary"></div>
+        <div class="move-banner" id="moveBanner"></div>
+        <div class="preview-tap-zone" id="previewTapZone">
+          <div class="preview" id="previewBoard"></div>
+        </div>
+        <div class="step-controls">
+          <button id="prevStepButton" type="button">戻る</button>
+          <button id="nextStepButton" type="button">進む</button>
+        </div>
+        <button id="toggleStepsButton" type="button" class="steps-toggle">テキスト解答を表示</button>
+        <ol class="steps" id="solutionSteps" hidden></ol>
+      </aside>
+    </main>
+
+    <template id="tubeTemplate">
+      <div class="tube-card">
+        <div class="tube"></div>
+        <div class="tube-footer">
+          <span class="tube-name"></span>
+        </div>
+      </div>
+    </template>
+
+    <script src="solver.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
