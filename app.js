@@ -24,6 +24,9 @@
     moved: false,
     lastX: 0,
     lastY: 0,
+    startX: 0,
+    startY: 0,
+    startQuad: null,
     pointerX: 0,
     pointerY: 0,
     suppressClick: false,
@@ -568,6 +571,19 @@
     return nearestDistance <= 7 ? nearest : addPaletteColor(color);
   }
 
+  function nearestExistingPaletteColor(color) {
+    let nearest = "";
+    let nearestDistance = Infinity;
+    for (const existing of paletteColors) {
+      const distance = colorDistance(color, existing);
+      if (distance < nearestDistance) {
+        nearest = existing;
+        nearestDistance = distance;
+      }
+    }
+    return nearest && nearestDistance <= 10 ? nearest : addPaletteColor(color);
+  }
+
   function drawSourceImageOnly() {
     ctx.clearRect(0, 0, els.imageCanvas.width, els.imageCanvas.height);
     if (sourceImage) {
@@ -580,6 +596,13 @@
     const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
     if (hsl.s < 0.18) {
       return color;
+    }
+    if (hsl.h >= 18 && hsl.h <= 42) {
+      const hue = hsl.l > 0.58 && hsl.s < 0.68 ? Math.max(18, hsl.h - 5) : Math.min(38, hsl.h + 3);
+      const sat = hsl.l > 0.58 ? Math.max(0.42, hsl.s * 0.82) : Math.min(0.96, Math.max(0.72, hsl.s * 1.22));
+      const light = hsl.l > 0.58 ? Math.min(0.78, Math.max(0.64, hsl.l + 0.08)) : Math.min(0.6, Math.max(0.48, hsl.l - 0.03));
+      const adjusted = hslToRgb(hue, sat, light);
+      return rgbToHex(adjusted.r, adjusted.g, adjusted.b);
     }
     const targetMinLightness = hsl.l < 0.38 ? 0.28 : 0.42;
     const polished = hslToRgb(
@@ -672,6 +695,103 @@
     ));
   }
 
+  function readStableSlotColor(x, y, sampleRadiusX = 7, sampleRadiusY = 7) {
+    const width = Math.max(11, Math.round(sampleRadiusX * 2 + 15));
+    const height = Math.max(11, Math.round(sampleRadiusY * 2 + 13));
+    const halfW = Math.floor(width / 2);
+    const halfH = Math.floor(height / 2);
+    const startX = Math.max(0, Math.min(els.imageCanvas.width - width, Math.round(x - halfW)));
+    const startY = Math.max(0, Math.min(els.imageCanvas.height - height, Math.round(y - halfH)));
+    const data = ctx.getImageData(startX, startY, width, height).data;
+    const clusters = new Map();
+    let fallback = null;
+    let fallbackScore = -Infinity;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const pixel = i / 4;
+      const px = startX + (pixel % width);
+      const py = startY + Math.floor(pixel / width);
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const hsl = rgbToHsl(r, g, b);
+      const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+      const darkLiquid = hsl.l >= 0.07 && hsl.l < 0.34 && (hsl.s >= 0.28 || chroma >= 0.14);
+      if (
+        hsl.l < 0.07 ||
+        hsl.l > 0.9 ||
+        hsl.s < 0.16 ||
+        chroma < 0.09 ||
+        (hsl.l < 0.23 && !darkLiquid)
+      ) {
+        continue;
+      }
+      const dx = Math.abs(px - x) / Math.max(1, halfW);
+      const dy = Math.abs(py - y) / Math.max(1, halfH);
+      const distancePenalty = Math.min(0.55, (dx * dx + dy * dy) * 0.18);
+      const darkBoost = darkLiquid ? 0.75 : 0;
+      const weight = Math.max(0.12, 0.7 + hsl.s * 1.15 + chroma * 0.85 + darkBoost - distancePenalty);
+      const hueBin = Math.round(hsl.h / 10);
+      const lightBin = Math.floor(hsl.l * 9);
+      const satBin = Math.floor(hsl.s * 6);
+      const key = `${hueBin}:${lightBin}:${satBin}`;
+      const cluster =
+        clusters.get(key) ||
+        {
+          count: 0,
+          weight: 0,
+          r: 0,
+          g: 0,
+          b: 0,
+          s: 0,
+          l: 0,
+        };
+      cluster.count += 1;
+      cluster.weight += weight;
+      cluster.r += r * weight;
+      cluster.g += g * weight;
+      cluster.b += b * weight;
+      cluster.s += hsl.s * weight;
+      cluster.l += hsl.l * weight;
+      clusters.set(key, cluster);
+
+      const pixelScore = weight + hsl.s * 1.4 + chroma - distancePenalty;
+      if (pixelScore > fallbackScore) {
+        fallbackScore = pixelScore;
+        fallback = { r, g, b };
+      }
+    }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const cluster of clusters.values()) {
+      const avgS = cluster.s / cluster.weight;
+      const avgL = cluster.l / cluster.weight;
+      const score =
+        cluster.count * 1.25 +
+        cluster.weight * 1.05 +
+        avgS * 7 -
+        Math.max(0, 0.22 - avgL) * 5 -
+        Math.max(0, avgL - 0.84) * 7;
+      if (score > bestScore) {
+        best = cluster;
+        bestScore = score;
+      }
+    }
+
+    if (best) {
+      return nearestExistingPaletteColor(polishColor(rgbToHex(
+        Math.round(best.r / best.weight),
+        Math.round(best.g / best.weight),
+        Math.round(best.b / best.weight)
+      )));
+    }
+    if (fallback) {
+      return nearestExistingPaletteColor(polishColor(rgbToHex(fallback.r, fallback.g, fallback.b)));
+    }
+    return nearestPaletteColor(readAverageColor(x, y, 21));
+  }
+
   function findReadablePoint(x, y, radius = 5) {
     let best = { x, y, score: -Infinity };
     const minX = Math.max(0, x - radius);
@@ -701,41 +821,74 @@
     return best;
   }
 
-  function isUnknownBlankCell(x, y, size = 35) {
+  function isPotentialUnknownBaseColor(color) {
+    const hsl = hexToHsl(color);
+    return hsl.l < 0.34 || (hsl.l < 0.46 && hsl.s < 0.48);
+  }
+
+  function isUnknownBlankCell(x, y, size = 39) {
     const half = Math.floor(size / 2);
     const startX = Math.max(0, Math.min(els.imageCanvas.width - size, x - half));
     const startY = Math.max(0, Math.min(els.imageCanvas.height - size, y - half));
     const data = ctx.getImageData(startX, startY, size, size).data;
     let brightNeutral = 0;
-    let darkNeutral = 0;
-    let saturated = 0;
+    let mutedDark = 0;
+    let colorful = 0;
+    let centerBrightNeutral = 0;
+    let centerTotal = 0;
     let total = 0;
 
     for (let i = 0; i < data.length; i += 4) {
+      const pixel = i / 4;
+      const px = startX + (pixel % size);
+      const py = startY + Math.floor(pixel / size);
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
       const hsl = rgbToHsl(r, g, b);
       const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+      const isBrightNeutral = hsl.l > 0.34 && hsl.s < 0.32 && chroma < 0.24;
       total += 1;
-      if (hsl.s > 0.28 && hsl.l > 0.14 && hsl.l < 0.9) {
-        saturated += 1;
+      if (hsl.s > 0.32 && chroma > 0.16 && hsl.l > 0.18 && hsl.l < 0.9) {
+        colorful += 1;
       }
-      if (hsl.l > 0.42 && hsl.s < 0.24 && chroma < 0.18) {
+      if (isBrightNeutral) {
         brightNeutral += 1;
       }
-      if (hsl.l < 0.28 && hsl.s < 0.28) {
-        darkNeutral += 1;
+      if (hsl.l < 0.33 || (hsl.l < 0.45 && hsl.s < 0.36)) {
+        mutedDark += 1;
+      }
+      if (Math.hypot(px - x, py - y) <= size * 0.28) {
+        centerTotal += 1;
+        if (isBrightNeutral) {
+          centerBrightNeutral += 1;
+        }
       }
     }
 
     const brightRatio = brightNeutral / total;
-    const darkRatio = darkNeutral / total;
-    const saturatedRatio = saturated / total;
-    return (
-      (brightRatio > 0.012 && darkRatio > 0.18 && saturatedRatio < 0.2) ||
-      (darkRatio > 0.38 && saturatedRatio < 0.08)
-    );
+    const mutedDarkRatio = mutedDark / total;
+    const colorfulRatio = colorful / total;
+    const centerBrightRatio = centerTotal ? centerBrightNeutral / centerTotal : 0;
+
+    return brightRatio >= 0.01 &&
+      brightRatio <= 0.14 &&
+      centerBrightRatio >= 0.028 &&
+      mutedDarkRatio >= 0.2 &&
+      colorfulRatio <= 0.58;
+  }
+
+  function isUnknownBlankSlot(x, y) {
+    const offsets = [
+      { x: 0, y: 0 },
+      { x: 0, y: -6 },
+      { x: 0, y: 6 },
+      { x: 0, y: -14 },
+      { x: 0, y: -22 },
+      { x: -6, y: -14 },
+      { x: 6, y: -14 },
+    ];
+    return offsets.some((offset) => isUnknownBlankCell(x + offset.x, y + offset.y));
   }
 
   function parseStageCounts(value) {
@@ -785,15 +938,72 @@
     if (!quad || typeof quad !== "object") {
       return null;
     }
-    const next = {};
+    const points = [];
     for (const key of ["tl", "tr", "br", "bl"]) {
       const point = quad[key];
       if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
         return null;
       }
-      next[key] = { x: point.x, y: point.y };
+      points.push(point);
     }
-    return next;
+    return boundsToQuad({
+      left: Math.min(...points.map((point) => point.x)),
+      right: Math.max(...points.map((point) => point.x)),
+      top: Math.min(...points.map((point) => point.y)),
+      bottom: Math.max(...points.map((point) => point.y)),
+    });
+  }
+
+  function getMeshMargin() {
+    return 34;
+  }
+
+  function getMinMeshWidth() {
+    return Math.min(140, Math.max(72, els.imageCanvas.width * 0.22));
+  }
+
+  function getMinMeshHeight() {
+    return Math.min(120, Math.max(54, els.imageCanvas.height * 0.16));
+  }
+
+  function boundsToQuad(bounds) {
+    return {
+      tl: { x: bounds.left, y: bounds.top },
+      tr: { x: bounds.right, y: bounds.top },
+      br: { x: bounds.right, y: bounds.bottom },
+      bl: { x: bounds.left, y: bounds.bottom },
+    };
+  }
+
+  function quadToBounds(quad) {
+    const points = [quad.tl, quad.tr, quad.br, quad.bl];
+    return {
+      left: Math.min(...points.map((point) => point.x)),
+      right: Math.max(...points.map((point) => point.x)),
+      top: Math.min(...points.map((point) => point.y)),
+      bottom: Math.max(...points.map((point) => point.y)),
+    };
+  }
+
+  function clampBoundsToCanvas(bounds) {
+    const margin = getMeshMargin();
+    const minWidth = getMinMeshWidth();
+    const minHeight = getMinMeshHeight();
+    const maxLeft = els.imageCanvas.width - margin - minWidth;
+    const maxTop = els.imageCanvas.height - margin - minHeight;
+    let left = Math.max(margin, Math.min(maxLeft, bounds.left));
+    let right = Math.max(left + minWidth, bounds.right);
+    if (right > els.imageCanvas.width - margin) {
+      right = els.imageCanvas.width - margin;
+      left = Math.max(margin, right - Math.max(minWidth, bounds.right - bounds.left));
+    }
+    let top = Math.max(margin, Math.min(maxTop, bounds.top));
+    let bottom = Math.max(top + minHeight, bounds.bottom);
+    if (bottom > els.imageCanvas.height - margin) {
+      bottom = els.imageCanvas.height - margin;
+      top = Math.max(margin, bottom - Math.max(minHeight, bounds.bottom - bounds.top));
+    }
+    return { left, right, top, bottom };
   }
 
   function createDefaultMeshQuad(row, rows) {
@@ -824,6 +1034,12 @@
     for (let row = 0; row < rows; row += 1) {
       clampMeshQuad(row);
     }
+  }
+
+  function resetMeshQuads() {
+    const groups = getMeshGroups();
+    state.meshQuads = groups.map((_, row) => createDefaultMeshQuad(row, groups.length));
+    ensureMeshQuads();
   }
 
   function interpolatePoint(a, b, t) {
@@ -863,6 +1079,15 @@
   function getQuadPoints(row) {
     const quad = state.meshQuads[row];
     return quad ? [quad.tl, quad.tr, quad.br, quad.bl] : [];
+  }
+
+  function cloneQuad(quad) {
+    return {
+      tl: { ...quad.tl },
+      tr: { ...quad.tr },
+      br: { ...quad.br },
+      bl: { ...quad.bl },
+    };
   }
 
   function getQuadCenter(row) {
@@ -905,7 +1130,7 @@
         }
       }
     }
-    if (nearest.distance <= 26) {
+    if (nearest.distance <= 70) {
       return { mode: "corner", row: nearest.row, corner: nearest.corner };
     }
 
@@ -928,32 +1153,52 @@
     return { mode: "move", row: nearestRow, corner: "" };
   }
 
-  function moveMeshQuad(row, dx, dy) {
-    const quad = state.meshQuads[row];
-    if (!quad) {
+  function setMeshQuadFromDrag(row, baseQuad, dx, dy) {
+    if (!baseQuad) {
       return;
     }
-    for (const key of ["tl", "tr", "br", "bl"]) {
-      quad[key].x += dx;
-      quad[key].y += dy;
-    }
-    clampMeshQuad(row);
+    const base = quadToBounds(baseQuad);
+    const width = base.right - base.left;
+    const height = base.bottom - base.top;
+    const margin = getMeshMargin();
+    const minLeft = margin;
+    const maxLeft = els.imageCanvas.width - margin - width;
+    const minTop = margin;
+    const maxTop = els.imageCanvas.height - margin - height;
+    const left = Math.max(minLeft, Math.min(maxLeft, base.left + dx));
+    const top = Math.max(minTop, Math.min(maxTop, base.top + dy));
+    state.meshQuads[row] = boundsToQuad({
+      left,
+      right: left + width,
+      top,
+      bottom: top + height,
+    });
   }
 
-  function moveMeshCorner(row, corner, dx, dy) {
-    const quad = state.meshQuads[row];
-    if (!quad || !quad[corner]) {
+  function setMeshCornerFromDrag(row, corner, baseQuad, dx, dy) {
+    if (!baseQuad || !baseQuad[corner]) {
       return;
     }
-    quad[corner].x += dx;
-    quad[corner].y += dy;
-    clampPointToCanvas(quad[corner]);
-  }
+    const base = quadToBounds(baseQuad);
+    const margin = getMeshMargin();
+    const minWidth = getMinMeshWidth();
+    const minHeight = getMinMeshHeight();
+    let { left, right, top, bottom } = base;
+    const x = baseQuad[corner].x + dx;
+    const y = baseQuad[corner].y + dy;
 
-  function clampPointToCanvas(point) {
-    const margin = 12;
-    point.x = Math.max(margin, Math.min(els.imageCanvas.width - margin, point.x));
-    point.y = Math.max(margin, Math.min(els.imageCanvas.height - margin, point.y));
+    if (corner.includes("l")) {
+      left = Math.max(margin, Math.min(right - minWidth, x));
+    } else {
+      right = Math.min(els.imageCanvas.width - margin, Math.max(left + minWidth, x));
+    }
+    if (corner.includes("t")) {
+      top = Math.max(margin, Math.min(bottom - minHeight, y));
+    } else {
+      bottom = Math.min(els.imageCanvas.height - margin, Math.max(top + minHeight, y));
+    }
+
+    state.meshQuads[row] = boundsToQuad({ left, right, top, bottom });
   }
 
   function clampMeshQuad(row) {
@@ -961,35 +1206,20 @@
     if (!quad) {
       return;
     }
-    const margin = 12;
-    const points = getQuadPoints(row);
-    const xs = points.map((point) => point.x);
-    const ys = points.map((point) => point.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
+    const margin = getMeshMargin();
+    const bounds = quadToBounds(quad);
     const canvasWidth = els.imageCanvas.width;
     const canvasHeight = els.imageCanvas.height;
-    let dx = 0;
-    let dy = 0;
-
-    if (minX < margin) {
-      dx = margin - minX;
-    } else if (maxX > canvasWidth - margin) {
-      dx = canvasWidth - margin - maxX;
+    if (
+      bounds.right < margin ||
+      bounds.left > canvasWidth - margin ||
+      bounds.bottom < margin ||
+      bounds.top > canvasHeight - margin
+    ) {
+      state.meshQuads[row] = createDefaultMeshQuad(row, getMeshGroups().length);
+      return;
     }
-    if (minY < margin) {
-      dy = margin - minY;
-    } else if (maxY > canvasHeight - margin) {
-      dy = canvasHeight - margin - maxY;
-    }
-    if (dx || dy) {
-      for (const point of points) {
-        point.x += dx;
-        point.y += dy;
-      }
-    }
+    state.meshQuads[row] = boundsToQuad(clampBoundsToCanvas(bounds));
   }
 
   function drawImageAndMesh() {
@@ -1055,12 +1285,17 @@
       for (const point of getQuadPoints(row)) {
         ctx.beginPath();
         ctx.fillStyle = "rgba(0, 0, 0, 0.62)";
-        ctx.arc(point.x, point.y, 10, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, 13, 0, Math.PI * 2);
         ctx.fill();
         ctx.beginPath();
         ctx.fillStyle = "#ffffff";
-        ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, 9, 0, Math.PI * 2);
         ctx.fill();
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(143, 23, 40, 0.82)";
+        ctx.lineWidth = 2;
+        ctx.arc(point.x, point.y, 9, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
     ctx.restore();
@@ -1137,17 +1372,37 @@
     paletteColors.length = 0;
     drawSourceImageOnly();
     const tubes = [];
-    for (const tubePoints of getMeshPoints()) {
-      const tube = tubePoints.map((point) => {
-        const x = Math.round(point.x);
-        const y = Math.round(point.y);
-        if (isUnknownBlankCell(x, y)) {
-          return "";
+    const meshPoints = getMeshPoints();
+    const groups = getMeshGroups();
+    let cursor = 0;
+    for (let row = 0; row < groups.length; row += 1) {
+      const rowTubes = meshPoints.slice(cursor, cursor + groups[row]);
+      cursor += groups[row];
+      const columnDistance =
+        rowTubes.length > 1
+          ? Math.abs(rowTubes[1][0].x - rowTubes[0][0].x)
+          : 42;
+      const sampleRadiusX = Math.max(5, Math.min(13, columnDistance * 0.12));
+      for (const tubePoints of rowTubes) {
+        const verticalDistances = [];
+        for (let i = 1; i < tubePoints.length; i += 1) {
+          verticalDistances.push(Math.hypot(tubePoints[i].x - tubePoints[i - 1].x, tubePoints[i].y - tubePoints[i - 1].y));
         }
-        const readable = findReadablePoint(x, y);
-        return nearestPaletteColor(readAverageColor(readable.x, readable.y, 15));
-      });
-      tubes.push(tube);
+        const slotDistance = verticalDistances.length
+          ? verticalDistances.reduce((sum, item) => sum + item, 0) / verticalDistances.length
+          : 24;
+        const sampleRadiusY = Math.max(4, Math.min(10, slotDistance * 0.22));
+        const tube = tubePoints.map((point) => {
+          const x = Math.round(point.x);
+          const y = Math.round(point.y);
+          const baseColor = readAverageColor(x, y, 17);
+          if (isPotentialUnknownBaseColor(baseColor) && isUnknownBlankSlot(x, y)) {
+            return "";
+          }
+          return readStableSlotColor(x, y, sampleRadiusX, sampleRadiusY);
+        });
+        tubes.push(tube);
+      }
     }
     state.tubes = tubes;
     if (!state.selectedColor && paletteColors.length) {
@@ -1171,6 +1426,7 @@
       els.imageCanvas.height = Math.round(img.height * scale);
       sourceImage = img;
       els.imageHint.style.display = "none";
+      ensureMeshQuads();
       drawImageAndMesh();
     };
     imageObjectUrl = URL.createObjectURL(blob);
@@ -1319,12 +1575,15 @@
       dragState.moved = false;
       dragState.lastX = point.x;
       dragState.lastY = point.y;
+      dragState.startX = point.x;
+      dragState.startY = point.y;
       dragState.pointerX = point.x;
       dragState.pointerY = point.y;
       const target = getMeshDragTarget(point);
       dragState.mode = target.mode;
       dragState.row = target.row;
       dragState.corner = target.corner;
+      dragState.startQuad = cloneQuad(state.meshQuads[target.row]);
       els.imageCanvas.setPointerCapture(event.pointerId);
       drawImageAndMesh();
     });
@@ -1334,17 +1593,17 @@
       }
       event.preventDefault();
       const point = getCanvasPoint(event);
-      const dx = point.x - dragState.lastX;
-      const dy = point.y - dragState.lastY;
+      const dx = point.x - dragState.startX;
+      const dy = point.y - dragState.startY;
       dragState.pointerX = point.x;
       dragState.pointerY = point.y;
       if (Math.abs(dx) + Math.abs(dy) > 0.5) {
         dragState.moved = true;
         ensureMeshQuads();
         if (dragState.mode === "corner") {
-          moveMeshCorner(dragState.row, dragState.corner, dx, dy);
+          setMeshCornerFromDrag(dragState.row, dragState.corner, dragState.startQuad, dx, dy);
         } else {
-          moveMeshQuad(dragState.row, dx, dy);
+          setMeshQuadFromDrag(dragState.row, dragState.startQuad, dx, dy);
         }
         dragState.lastX = point.x;
         dragState.lastY = point.y;
@@ -1364,6 +1623,7 @@
         clampMeshQuad(dragState.row);
         saveInputState();
       }
+      dragState.startQuad = null;
       if (els.imageCanvas.hasPointerCapture(event.pointerId)) {
         els.imageCanvas.releasePointerCapture(event.pointerId);
       }
@@ -1371,6 +1631,7 @@
     });
     els.imageCanvas.addEventListener("pointercancel", () => {
       dragState.active = false;
+      dragState.startQuad = null;
       drawImageAndMesh();
     });
     els.readMeshButton.addEventListener("click", readMesh);
