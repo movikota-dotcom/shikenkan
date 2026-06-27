@@ -41,6 +41,7 @@
     addMeshStageButton: document.getElementById("addMeshStageButton"),
     removeMeshStageButton: document.getElementById("removeMeshStageButton"),
     solveButton: document.getElementById("solveButton"),
+    fillBlankButton: document.getElementById("fillBlankButton"),
     clearButton: document.getElementById("clearButton"),
     addTubeButton: document.getElementById("addTubeButton"),
     removeTubeButton: document.getElementById("removeTubeButton"),
@@ -322,6 +323,106 @@
     els.solverStatus.style.color = tone === "error" ? "#b23a48" : "";
   }
 
+  function countTubeColors() {
+    const counts = new Map();
+    for (const tube of state.tubes) {
+      for (const color of tube) {
+        if (!color) {
+          continue;
+        }
+        counts.set(color, (counts.get(color) || 0) + 1);
+      }
+    }
+    return counts;
+  }
+
+  function canPlaceColor(tubes, tubeIndex, slotIndex, color) {
+    return tubes[tubeIndex][slotIndex - 1] !== color && tubes[tubeIndex][slotIndex + 1] !== color;
+  }
+
+  function autoFillBlankSlots() {
+    const counts = countTubeColors();
+    const missingColors = [];
+    const invalidColors = [];
+    for (const [color, count] of counts.entries()) {
+      if (count > SLOT_COUNT) {
+        invalidColors.push(colorName(color));
+      }
+      for (let i = count; i < SLOT_COUNT; i += 1) {
+        missingColors.push(color);
+      }
+    }
+    if (invalidColors.length) {
+      setStatus("補完できません", "error");
+      els.solutionSummary.textContent = `4つを超えている色があります: ${invalidColors.join(", ")}`;
+      return;
+    }
+    if (!missingColors.length) {
+      setStatus("補完不要", "");
+      els.solutionSummary.textContent = "不足している色はありません。";
+      return;
+    }
+
+    const blanks = [];
+    state.tubes.forEach((tube, tubeIndex) => {
+      tube.forEach((color, slotIndex) => {
+        if (!color) {
+          blanks.push({ tubeIndex, slotIndex });
+        }
+      });
+    });
+    if (blanks.length < missingColors.length) {
+      setStatus("補完できません", "error");
+      els.solutionSummary.textContent = "空白マスより不足している色の数が多いです。";
+      return;
+    }
+
+    const colors = missingColors.sort((a, b) => a.localeCompare(b));
+    const nextTubes = state.tubes.map((tube) => tube.slice());
+    const usedBlankIndexes = new Set();
+
+    function fillColor(colorIndex) {
+      if (colorIndex >= colors.length) {
+        return true;
+      }
+      const color = colors[colorIndex];
+      const candidates = blanks
+        .map((blank, index) => ({ ...blank, index }))
+        .filter((blank) => !usedBlankIndexes.has(blank.index))
+        .filter((blank) => canPlaceColor(nextTubes, blank.tubeIndex, blank.slotIndex, color))
+        .sort((a, b) => {
+          const aNeighbors = Number(Boolean(nextTubes[a.tubeIndex][a.slotIndex - 1])) + Number(Boolean(nextTubes[a.tubeIndex][a.slotIndex + 1]));
+          const bNeighbors = Number(Boolean(nextTubes[b.tubeIndex][b.slotIndex - 1])) + Number(Boolean(nextTubes[b.tubeIndex][b.slotIndex + 1]));
+          return bNeighbors - aNeighbors;
+        });
+
+      for (const blank of candidates) {
+        nextTubes[blank.tubeIndex][blank.slotIndex] = color;
+        usedBlankIndexes.add(blank.index);
+        if (fillColor(colorIndex + 1)) {
+          return true;
+        }
+        usedBlankIndexes.delete(blank.index);
+        nextTubes[blank.tubeIndex][blank.slotIndex] = "";
+      }
+      return false;
+    }
+
+    if (!fillColor(0)) {
+      setStatus("補完できません", "error");
+      els.solutionSummary.textContent = "上下に同じ色が連続しない配置が見つかりませんでした。";
+      return;
+    }
+
+    state.tubes = nextTubes;
+    rebuildPaletteFromTubes();
+    clearSolution();
+    saveInputState();
+    render();
+    setStatus("補完しました", "");
+    els.solutionSummary.textContent = "空白に不足している色を補完しました。";
+  }
+
   function solve() {
     saveInputState();
     setStatus("探索中", "");
@@ -598,6 +699,43 @@
       }
     }
     return best;
+  }
+
+  function isUnknownBlankCell(x, y, size = 35) {
+    const half = Math.floor(size / 2);
+    const startX = Math.max(0, Math.min(els.imageCanvas.width - size, x - half));
+    const startY = Math.max(0, Math.min(els.imageCanvas.height - size, y - half));
+    const data = ctx.getImageData(startX, startY, size, size).data;
+    let brightNeutral = 0;
+    let darkNeutral = 0;
+    let saturated = 0;
+    let total = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const hsl = rgbToHsl(r, g, b);
+      const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+      total += 1;
+      if (hsl.s > 0.28 && hsl.l > 0.14 && hsl.l < 0.9) {
+        saturated += 1;
+      }
+      if (hsl.l > 0.42 && hsl.s < 0.24 && chroma < 0.18) {
+        brightNeutral += 1;
+      }
+      if (hsl.l < 0.28 && hsl.s < 0.28) {
+        darkNeutral += 1;
+      }
+    }
+
+    const brightRatio = brightNeutral / total;
+    const darkRatio = darkNeutral / total;
+    const saturatedRatio = saturated / total;
+    return (
+      (brightRatio > 0.012 && darkRatio > 0.18 && saturatedRatio < 0.2) ||
+      (darkRatio > 0.38 && saturatedRatio < 0.08)
+    );
   }
 
   function parseStageCounts(value) {
@@ -1001,7 +1139,12 @@
     const tubes = [];
     for (const tubePoints of getMeshPoints()) {
       const tube = tubePoints.map((point) => {
-        const readable = findReadablePoint(Math.round(point.x), Math.round(point.y));
+        const x = Math.round(point.x);
+        const y = Math.round(point.y);
+        if (isUnknownBlankCell(x, y)) {
+          return "";
+        }
+        const readable = findReadablePoint(x, y);
         return nearestPaletteColor(readAverageColor(readable.x, readable.y, 15));
       });
       tubes.push(tube);
@@ -1057,6 +1200,7 @@
 
   function bindEvents() {
     els.solveButton.addEventListener("click", solve);
+    els.fillBlankButton.addEventListener("click", autoFillBlankSlots);
     els.clearButton.addEventListener("click", clearBoard);
     els.addTubeButton.addEventListener("click", () => {
       state.tubes.push(["", "", "", ""]);

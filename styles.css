@@ -184,6 +184,8 @@ h2 {
 .solve-row {
   display: flex;
   justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-top: 14px;
 }
 
